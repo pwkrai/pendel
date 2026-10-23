@@ -1,5 +1,5 @@
 // App-Hülle offline verfügbar machen. Fahrplandaten werden nie zwischengespeichert.
-const CACHE = 'pendel-v2';
+const CACHE = 'pendel-v3';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'manifest.json', 'icon-192.png', 'apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {

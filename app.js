@@ -11,6 +11,8 @@ const RESULTS_PER_PAGE = 5;
 const STORAGE_KEY = 'pendel.routes.v1';
 const DETAIL_KEY = 'pendel.detail.v1';
 const OFFSETS = [0, 15, 30, 60];
+// Farbverläufe der Kacheln auf der Startseite (der Reihe nach)
+const TILE_COLORS = [['#4f5bff', '#8a4dff'], ['#00a6c8', '#2f7bff'], ['#ff6a3d', '#ff3d7f'], ['#12a150', '#00a6a6'], ['#c04dff', '#ff4da6']];
 
 // Haltestellen-IDs ermittelt über /v1/geocode am 23.10.2026.
 // dbName/eva = Name und Haltestellennummer bei bahn.de (für den Link „In DB Navigator öffnen“).
@@ -96,6 +98,47 @@ function timeHtml(sched, rt, realTime, cls = 't') {
   const d = delayMin(sched, rt);
   if (d === 0) return `<span class="${cls} ok">${hhmm(rt)}</span>`;
   return `<span class="${cls} ${d > 0 ? 'late' : 'ok'}">${hhmm(rt)}</span> <span class="t-sched struck">${hhmm(sched)}</span>`;
+}
+
+// Großer Zeitblock: Echtzeit groß, darunter Planzeit und Verspätung als Pille
+function timeBlock(sched, rt, realTime, align = '') {
+  if (!realTime || !rt) {
+    return `<div class="tb ${align}"><span class="t plan">${hhmm(sched || rt)}</span><span class="tb-sub">Fahrplan</span></div>`;
+  }
+  const d = delayMin(sched, rt);
+  if (d === 0) return `<div class="tb ${align}"><span class="t ok">${hhmm(rt)}</span><span class="tb-sub ok">pünktlich</span></div>`;
+  const cls = d > 0 ? 'late' : 'ok';
+  return `<div class="tb ${align}"><span class="t ${cls}">${hhmm(rt)}</span>`
+    + `<span class="tb-sub"><s>${hhmm(sched)}</s> <span class="pill ${cls}">${d > 0 ? '+' : ''}${d}</span></span></div>`;
+}
+
+// Balken über die ganze Reise: farbige Fahrten, gepunktete Fußwege, Lücken = Wartezeit
+function journeyBar(it) {
+  const start = new Date(it.startTime);
+  const total = Math.max(new Date(it.endTime) - start, 1);
+  let cursor = start;
+  const parts = [];
+  for (const leg of it.legs) {
+    const s = new Date(leg.startTime);
+    const e = new Date(leg.endTime);
+    if (s - cursor > 60000) parts.push(`<span class="seg wait" style="flex-grow:${(s - cursor) / total}"></span>`);
+    const grow = Math.max(e - s, 0) / total;
+    if (isTransit(leg)) {
+      const bg = leg.routeColor ? `#${esc(leg.routeColor)}` : 'var(--accent)';
+      parts.push(`<span class="seg${leg.cancelled ? ' cancelled' : ''}" style="flex-grow:${grow};background:${bg}" title="${esc(lineLabel(leg))}"></span>`);
+    } else if (e - s >= 60000) {
+      parts.push(`<span class="seg walk" style="flex-grow:${grow}"></span>`);
+    }
+    if (e > cursor) cursor = e;
+  }
+  return `<div class="jbar" aria-hidden="true">${parts.join('')}</div>`;
+}
+
+function stopsTimeline(fromName, toName) {
+  return `<div class="tile-stops">
+    <div class="ts"><span class="ts-dot"></span><span>${esc(fromName)}</span></div>
+    <div class="ts"><span class="ts-dot end"></span><span>${esc(toName)}</span></div>
+  </div>`;
 }
 
 function collectAlerts(legs) {
@@ -309,14 +352,32 @@ function viewHome(view) {
       <a class="btn primary block" href="#/edit/new">+ Strecke hinzufügen</a>`;
     return;
   }
-  view.innerHTML = routes.map((r) => `
-    <div class="tile">
-      <button class="tile-main" data-go="#/r/${esc(r.id)}/0">
-        <div class="tile-name">${esc(r.name)}</div>
-        <div class="tile-route">${esc(r.from.name)}<span class="arrow">→</span>${esc(r.to.name)}</div>
-      </button>
-      <button class="tile-swap" data-go="#/r/${esc(r.id)}/1" aria-label="Rückfahrt ${esc(r.to.name)} nach ${esc(r.from.name)}">⇄<small>Rück</small></button>
-    </div>`).join('') + `<p class="hint">Tippen = Hinfahrt · ⇄ = Rückfahrt</p>${footerHtml()}`;
+  const now = new Date();
+  const hour = Number(new Intl.DateTimeFormat('de-DE', { hour: 'numeric', hourCycle: 'h23', timeZone: TZ }).formatToParts(now).find((p) => p.type === 'hour').value);
+  const greet = hour < 5 ? 'Gute Nacht' : hour < 11 ? 'Guten Morgen' : hour < 17 ? 'Guten Tag' : hour < 22 ? 'Guten Abend' : 'Gute Nacht';
+  const date = new Intl.DateTimeFormat('de-DE', { weekday: 'long', day: 'numeric', month: 'long', timeZone: TZ }).format(now);
+  view.innerHTML = `
+    <section class="hero">
+      <div class="hero-greet">${greet}</div>
+      <div class="hero-date">${date} · ${hhmm(now)} Uhr</div>
+    </section>
+    <div class="tiles">${routes.map((r, i) => {
+      const [a, b] = TILE_COLORS[i % TILE_COLORS.length];
+      return `
+      <div class="tile" style="--tile-a:${a};--tile-b:${b}">
+        <button class="tile-main" data-go="#/r/${esc(r.id)}/0" aria-label="Hinfahrt ${esc(r.from.name)} nach ${esc(r.to.name)}">
+          <div class="tile-name">${esc(r.name)}</div>
+          ${stopsTimeline(r.from.name, r.to.name)}
+        </button>
+        <div class="tile-side">
+          <button class="tile-swap" data-go="#/r/${esc(r.id)}/1" aria-label="Rückfahrt ${esc(r.to.name)} nach ${esc(r.from.name)}">⇅</button>
+          <small>Rückfahrt</small>
+        </div>
+      </div>`;
+    }).join('')}
+      <a class="add-tile" href="#/edit/new">＋ Strecke hinzufügen</a>
+    </div>
+    ${footerHtml()}`;
   view.querySelectorAll('[data-go]').forEach((b) => b.addEventListener('click', () => { location.hash = b.dataset.go; }));
 }
 
@@ -327,6 +388,8 @@ function viewConnections(view, routeId, reverse) {
   const from = reverse ? r.to : r.from;
   const to = reverse ? r.from : r.to;
   setHeader({ title: r.name, back: true, refresh: true });
+  const [ca, cb] = TILE_COLORS[routes.indexOf(r) % TILE_COLORS.length];
+  const tileStyle = `--tile-a:${ca};--tile-b:${cb}`;
 
   const st = { offset: 0, items: [], pages: 0, error: null, loading: true, loadingMore: false, updated: null, token: 0 };
 
@@ -396,21 +459,24 @@ function viewConnections(view, routeId, reverse) {
     const lastLeg = s.it.legs[s.it.legs.length - 1];
     const walkEnd = lastLeg.mode === 'WALK' && lastLeg.duration >= 60 ? lastLeg : null;
     const showDay = !sameBerlinDay(new Date(s.depSched), new Date());
+    const track = trackHtml(s.first.from);
     return `<button class="conn${s.cancelled ? ' cancelled' : ''}" data-idx="${idx}">
-      ${s.cancelled ? '<div style="margin-bottom:6px"><span class="badge-cancel">Fällt aus</span></div>' : ''}
-      <div class="conn-times">
-        ${timeHtml(s.depSched, s.depRt, s.depReal)}
-        <span class="dash">→</span>
-        ${timeHtml(s.arrSched, s.arrRt, s.arrReal)}
-        ${showDay ? `<span class="t-sched">${fmtDay.format(new Date(s.depSched))}</span>` : ''}
+      ${s.cancelled ? '<div style="margin-bottom:10px"><span class="badge-cancel">Fällt aus</span></div>' : ''}
+      <div class="conn-top">
+        ${timeBlock(s.depSched, s.depRt, s.depReal)}
+        <div class="conn-mid">
+          <span class="dur">${fmtDuration(s.it.duration)}</span>
+          <span class="rule"></span>
+          <span class="tr">${s.it.transfers === 0 ? 'direkt' : `${s.it.transfers} Umstieg${s.it.transfers > 1 ? 'e' : ''}`}</span>
+        </div>
+        ${timeBlock(s.arrSched, s.arrRt, s.arrReal, 'right')}
       </div>
+      ${journeyBar(s.it)}
       <div class="conn-meta">
-        <span>⏱ <b>${fmtDuration(s.it.duration)}</b></span>
-        <span>${s.it.transfers === 0 ? '<b>direkt</b>' : `<b>${s.it.transfers}</b> Umstieg${s.it.transfers > 1 ? 'e' : ''}`}</span>
-        ${trackHtml(s.first.from)}
-        ${!s.depReal ? '<span>nur Fahrplan</span>' : ''}
+        <span class="lines">${s.transit.map(lineChip).join('')}</span>
+        ${track ? `<span class="meta-chip">${track}</span>` : ''}
+        ${showDay ? `<span class="meta-chip">${fmtDay.format(new Date(s.depSched))}</span>` : ''}
       </div>
-      <div class="lines">${s.transit.map(lineChip).join('')}</div>
       ${walkStart ? `<div class="walk-note">🚶 vorher ${Math.round(walkStart.duration / 60)} Min Fußweg zu ${esc(walkStart.to.name)} (los um ${hhmm(walkStart.startTime)})</div>` : ''}
       ${walkEnd ? `<div class="walk-note">🚶 danach ${Math.round(walkEnd.duration / 60)} Min Fußweg ab ${esc(walkEnd.from.name)}, am Ziel ca. ${hhmm(walkEnd.endTime)}</div>` : ''}
       ${alertsHtml(s.alerts)}
@@ -421,7 +487,7 @@ function viewConnections(view, routeId, reverse) {
     const chips = OFFSETS.map((o) => `<button class="chip" data-off="${o}" aria-pressed="${st.offset === o}">${o === 0 ? 'jetzt' : `+${o} Min`}</button>`).join('');
     let body;
     if (st.error) body = errorBox(st.error, from, to, queryTime(), 'retry');
-    else if (st.loading && !st.items.length) body = '<div class="loading">Lade Verbindungen …</div>';
+    else if (st.loading && !st.items.length) body = '<div class="skeleton"></div>'.repeat(4);
     else if (!st.items.length) body = `<p class="hint">Keine Verbindungen gefunden.</p><a class="footer-link" href="${esc(dbLink(from, to, queryTime()))}" target="_blank" rel="noopener">In DB Navigator öffnen</a>`;
     else {
       body = st.items.map(connHtml).join('')
@@ -429,11 +495,11 @@ function viewConnections(view, routeId, reverse) {
         + `<a class="footer-link" href="${esc(dbLink(from, to, queryTime()))}" target="_blank" rel="noopener">In DB Navigator öffnen ↗</a>`;
     }
     view.innerHTML = `
-      <div class="route-head">${esc(from.name)}<span class="arrow">→</span>${esc(to.name)}</div>
+      <div class="route-card" style="${tileStyle}">${stopsTimeline(from.name, to.name)}</div>
       <div class="chips">${chips}</div>
       <div class="status-line">
-        <span>${st.loading ? 'Aktualisiere …' : st.updated ? `Stand ${fmtTimeSec.format(st.updated)}` : ''}</span>
-        <span>ab ${hhmm(queryTime())} · auto alle 60 s</span>
+        <span>${st.loading ? 'Aktualisiere …' : st.updated ? `<span class="live-dot"></span>Live · Stand ${fmtTimeSec.format(st.updated)}` : ''}</span>
+        <span>ab ${hhmm(queryTime())} · alle 60 s</span>
       </div>
       ${body}`;
     view.querySelectorAll('.chip').forEach((b) => b.addEventListener('click', () => {
@@ -596,7 +662,7 @@ function viewDetail(view) {
   function legHtml(leg, now) {
     if (!isTransit(leg)) {
       const mins = Math.max(1, Math.round(leg.duration / 60));
-      return `<div class="walk-leg">🚶 ${mins} Min Fußweg${leg.distance ? ` (${Math.round(leg.distance)} m)` : ''} → ${esc(leg.to.name)}</div>`;
+      return `<div class="walk-leg"><span>🚶</span><span>${mins} Min Fußweg${leg.distance ? ` (${Math.round(leg.distance)} m)` : ''} → ${esc(leg.to.name)}</span></div>`;
     }
     const stops = stopsOf(leg);
     const lastIdx = stops.length - 1;
@@ -625,25 +691,25 @@ function viewDetail(view) {
       <div class="leg-sub">${[leg.tripShortName && leg.tripShortName !== lineLabel(leg) ? `Fahrt ${esc(leg.tripShortName)}` : '', esc(leg.agencyName || ''), leg.realTime ? 'Echtzeit' : 'nur Fahrplan, keine Echtzeit'].filter(Boolean).join(' · ')}</div>
       ${stateTxt ? `<div class="leg-state">${stateTxt}</div>` : ''}
       ${alertsHtml(legAlerts, true)}
-      <ul class="stops">${rows}</ul>
+      <ul class="stops"${leg.routeColor ? ` style="--c:#${esc(leg.routeColor)}"` : ''}>${rows}</ul>
     </div>`;
   }
 
   function overall(now) {
     const transit = st.it.legs.filter(isTransit);
-    if (transit.some((l) => l.cancelled)) return { cls: 'cancel', html: 'Achtung: Diese Verbindung fällt (teilweise) aus.<small>Bitte eine andere Verbindung wählen.</small>' };
+    if (transit.some((l) => l.cancelled)) return { cls: 'cancel', icon: '⚠️', html: 'Achtung: Diese Verbindung fällt (teilweise) aus.<small>Bitte eine andere Verbindung wählen.</small>' };
     for (const leg of transit) {
       const ls = legState(leg, now);
       const stops = stopsOf(leg);
       const veh = vehicleWord(leg);
       if (ls.state === 'before') {
         const m = Math.round((tDep(leg.from) - now) / 60000);
-        return { html: `${esc(lineLabel(leg))} fährt in ${m} Min ab ${esc(leg.from.name)}<small>${trackHtml(leg.from)}</small>` };
+        return { icon: '🕒', html: `${esc(lineLabel(leg))} fährt in ${m} Min ab ${esc(leg.from.name)}<small>${trackHtml(leg.from)}</small>` };
       }
-      if (ls.state === 'at') return { html: `${esc(lineLabel(leg))}: ${veh} hält in ${esc(stops[ls.i].name)}<small>Position geschätzt aus Fahrplan und Echtzeit</small>` };
-      if (ls.state === 'between') return { html: `${esc(lineLabel(leg))}: ${veh} ist zwischen ${esc(stops[ls.i].name)} und ${esc(stops[ls.j].name)}<small>Position geschätzt aus Fahrplan und Echtzeit</small>` };
+      if (ls.state === 'at') return { icon: '🚉', html: `${esc(lineLabel(leg))}: ${veh} hält in ${esc(stops[ls.i].name)}<small>Position geschätzt aus Fahrplan und Echtzeit</small>` };
+      if (ls.state === 'between') return { icon: '🚆', html: `${esc(lineLabel(leg))}: ${veh} ist zwischen ${esc(stops[ls.i].name)} und ${esc(stops[ls.j].name)}<small>Position geschätzt aus Fahrplan und Echtzeit</small>` };
     }
-    return { html: 'Reise beendet' };
+    return { cls: 'done', icon: '✓', html: 'Reise beendet' };
   }
 
   function drawMap(now) {
@@ -697,7 +763,7 @@ function viewDetail(view) {
     legs.forEach((leg) => {
       if (isTransit(leg) && prevTransit) {
         const mins = Math.round((tDep(leg.from) - tArr(prevTransit.to)) / 60000);
-        legsHtml += `<div class="transfer">↪ Umstieg in ${esc(leg.from.name)}: ${mins} Min${mins < 4 ? ' – <b style="color:var(--late)">knapp!</b>' : ''}</div>`;
+        legsHtml += `<div class="transfer"><span>↪</span><span>Umstieg in ${esc(leg.from.name)}: ${mins} Min${mins < 4 ? ' – <b style="color:var(--late)">knapp!</b>' : ''}</span></div>`;
       }
       legsHtml += legHtml(leg, now);
       if (isTransit(leg)) prevTransit = leg;
@@ -706,9 +772,18 @@ function viewDetail(view) {
     const hadMap = !!map;
     if (map) { map.remove(); map = null; posMarker = null; }
     view.innerHTML = `
-      <div class="banner${ov.cls ? ` ${ov.cls}` : ''}">${ov.html}</div>
-      ${s ? `<div class="status-line"><span>${hhmm(s.depRt || s.depSched)} → ${hhmm(s.arrRt || s.arrSched)} · ${fmtDuration(st.it.duration)} · ${st.it.transfers === 0 ? 'direkt' : `${st.it.transfers} Umst.`}</span>
-        <span>${st.loading ? 'Aktualisiere …' : `Stand ${fmtTimeSec.format(st.updated)}`}</span></div>` : ''}
+      ${s ? `<div class="hero-card">
+        <div class="conn-top">
+          ${timeBlock(s.depSched, s.depRt, s.depReal)}
+          <div class="conn-mid"><span class="dur">${fmtDuration(st.it.duration)}</span><span class="rule"></span>
+            <span class="tr">${st.it.transfers === 0 ? 'direkt' : `${st.it.transfers} Umstieg${st.it.transfers > 1 ? 'e' : ''}`}</span></div>
+          ${timeBlock(s.arrSched, s.arrRt, s.arrReal, 'right')}
+        </div>
+        <div class="hc-names"><span>${esc(s.first.from.name)}</span><span>${esc(s.last.to.name)}</span></div>
+        ${journeyBar(st.it)}
+      </div>` : ''}
+      <div class="banner${ov.cls ? ` ${ov.cls}` : ''}"><span class="b-icon">${ov.icon}</span><div>${ov.html}</div></div>
+      <div class="status-line"><span>${st.loading ? 'Aktualisiere …' : `<span class="live-dot"></span>Live · Stand ${fmtTimeSec.format(st.updated)}`}</span><span>alle 60 s</span></div>
       ${st.error ? `<div class="alert-box">Aktualisierung fehlgeschlagen: ${esc(errorText(st.error))} Angezeigt wird der letzte Stand.</div>` : ''}
       <div class="map-wrap"><div id="map"></div><div class="map-note">● Position geschätzt, kein GPS</div></div>
       ${legsHtml}
