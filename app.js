@@ -6,6 +6,8 @@
 const API_BASE = 'https://api.transitous.org/api';
 const TZ = 'Europe/Berlin';
 const REFRESH_MS = 60_000;
+// Nur Nahverkehr: kein ICE/IC/EC, keine Nachtzüge, keine Fernbusse
+const TRANSIT_MODES = 'REGIONAL_RAIL,REGIONAL_FAST_RAIL,SUBURBAN,TRAM,SUBWAY,METRO,BUS,FERRY';
 const REQUEST_TIMEOUT_MS = 20_000;
 const RESULTS_PER_PAGE = 5;
 const STORAGE_KEY = 'pendel.routes.v1';
@@ -403,7 +405,7 @@ function viewConnections(view, routeId, reverse) {
     for (let attempt = 0; attempt < 3 && added < RESULTS_PER_PAGE; attempt++) {
       const since = attempt === 0 ? after : nextAfter(list);
       const d = await api('/v6/plan', {
-        fromPlace: from.id, toPlace: to.id, time: since.toISOString(), numItineraries: RESULTS_PER_PAGE, language: 'de',
+        fromPlace: from.id, toPlace: to.id, time: since.toISOString(), numItineraries: RESULTS_PER_PAGE, language: 'de', transitModes: TRANSIT_MODES,
       });
       const keys = new Set(list.map((x) => x.key));
       const fresh = (d.itineraries || []).map(summarize)
@@ -624,7 +626,7 @@ function viewDetail(view) {
     if (!st.it.id) return;
     st.loading = true; setBusy(true);
     try {
-      const fresh = await api('/v6/refresh-itinerary', { itineraryId: st.it.id, language: 'de' });
+      const fresh = await api('/v6/refresh-itinerary', { itineraryId: st.it.id, language: 'de', transitModes: TRANSIT_MODES });
       if (fresh && Array.isArray(fresh.legs) && fresh.legs.length) {
         st.it = fresh; d.it = fresh; writeDetail(d);
       }
